@@ -1,6 +1,6 @@
 scriptTitle = "ROM Store"
 scriptAuthor = "david12549"
-scriptVersion = 4.0
+scriptVersion = 5.0
 scriptDescription = "Download ROMs from multiple sources"
 scriptIcon = "icon.png"
 scriptPermissions = { "http", "filesystem" }
@@ -554,17 +554,47 @@ end
 
 local function parseLinks(html)
     local items = {}
+    local seen = {}  -- Avoid duplicates
+    
     for href in html:gmatch('href="([^"]+)"') do
+        -- Skip duplicates
+        if seen[href] then goto continue end
+        seen[href] = true
+        
         local name = decodeUrl(href)
         name = name:gsub("/$", ""):match("([^/]+)$") or href
+        
+        -- Check if it's a directory (ends with / or is a letter path like /browse/system/a)
         local isDir = href:sub(-1) == "/"
-        if href ~= "../" then
-            local isZip = href:lower():match("%.zip$")
-            local isWanted = isWantedFile(href)
-            if isDir or isZip or isWanted then
-                items[#items + 1] = {href = href, name = name, isDir = isDir}
-            end
+        
+        -- EdgeEmu uses paths like /browse/nintendo-nes/a for letter navigation
+        -- These are directories even though they don't end in /
+        local isLetterNav = href:match("/browse/[^/]+/[a-z0-9#-]$")
+        if isLetterNav then
+            isDir = true
+            -- Extract just the letter as the name
+            name = href:match("/([^/]+)$") or name
         end
+        
+        -- Skip parent/home navigation links
+        if href == "../" or href == "/" or href:match("^/$") then
+            goto continue
+        end
+        
+        -- Skip non-content links (social media, external sites, etc)
+        if href:match("^https?://") and not href:match("edgeemu%.net") then
+            goto continue
+        end
+        
+        local isZip = href:lower():match("%.zip$")
+        local isWanted = isWantedFile(href)
+        local isDownload = href:match("^/download/")
+        
+        if isDir or isZip or isWanted or isDownload then
+            items[#items + 1] = {href = href, name = name, isDir = isDir}
+        end
+        
+        ::continue::
     end
     return items
 end
@@ -733,7 +763,26 @@ function main()
                     local romFolder = storageDevice .. ROM_BASE .. "\\" .. sys.folder
                     FileSystem.CreateDirectory(romFolder)
                     
-                    local file = browse(sys.url)
+                    -- Check if this is EdgeEmu (needs letter navigation)
+                    local isEdgeEmu = sys.url:match("edgeemu%.net")
+                    local browseUrl = sys.url
+                    
+                    if isEdgeEmu then
+                        -- Show A-Z letter menu for EdgeEmu
+                        local letters = {"#", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"}
+                        local letterChoice = Script.ShowPopupList(sys.name, "Select starting letter", letters)
+                        
+                        if letterChoice and not letterChoice.Canceled then
+                            local letter = letters[letterChoice.Selected.Key]:lower()
+                            if letter == "#" then letter = "0-9" end
+                            browseUrl = sys.url .. "/" .. letter
+                        else
+                            -- User cancelled letter selection, go back to system list
+                            goto continue_repo
+                        end
+                    end
+                    
+                    local file = browse(browseUrl)
                     if file then
                         local displayName = decodeUrl(file.name)
                         local confirm = Script.ShowMessageBox("Download", "Download " .. displayName .. "?", "Yes", "No")
@@ -784,6 +833,8 @@ function main()
                             end
                         end
                     end
+                    
+                    ::continue_repo::
                 end
             end
         end
